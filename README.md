@@ -132,9 +132,10 @@ This creates mutual TLS certificates in `certs/`.
 ### 3. Build the binaries
 
 ```bash
-go build -o master.exe ./cmd/master
-go build -o chunk.exe ./cmd/chunkserver
-go build -o client.exe ./cmd/client
+mkdir -p bin
+go build -o ./bin/master.exe ./cmd/master
+go build -o ./bin/chunk.exe ./cmd/chunkserver
+go build -o ./bin/client.exe ./cmd/client
 ```
 
 On Linux/macOS, omit the `.exe` extension.
@@ -145,28 +146,28 @@ Open **four** terminals:
 
 **Terminal 1 — Master:**
 ```bash
-./master -addr :9000 -primary chunk1 \
+./bin/master.exe -addr :9000 -primary chunk1 \
   -wal ./data/master/wal.json \
   -cert certs/server-cert.pem -key certs/server-key.pem -ca certs/ca-cert.pem
 ```
 
 **Terminal 2 — Chunk Server 1 (primary):**
 ```bash
-./chunk -id chunk1 -addr :9001 -master localhost:9000 \
+./bin/chunk.exe -id chunk1 -addr :9001 -master localhost:9000 \
   -data ./data/chunk1 \
   -cert certs/server-cert.pem -key certs/server-key.pem -ca certs/ca-cert.pem
 ```
 
 **Terminal 3 — Chunk Server 2:**
 ```bash
-./chunk -id chunk2 -addr :9002 -master localhost:9000 \
+./bin/chunk.exe -id chunk2 -addr :9002 -master localhost:9000 \
   -data ./data/chunk2 \
   -cert certs/server-cert.pem -key certs/server-key.pem -ca certs/ca-cert.pem
 ```
 
 **Terminal 4 — Chunk Server 3:**
 ```bash
-./chunk -id chunk3 -addr :9003 -master localhost:9000 \
+./bin/chunk.exe -id chunk3 -addr :9003 -master localhost:9000 \
   -data ./data/chunk3 \
   -cert certs/server-cert.pem -key certs/server-key.pem -ca certs/ca-cert.pem
 ```
@@ -186,13 +187,14 @@ Notes:
 - The built frontend is also served by the master on `https://localhost:8443` (default `-http` in `cmd/master/main.go`).
 - The master HTTPS REST/web endpoint accepts normal HTTPS clients (no browser client certificate setup required).
 - For straightforward local validation, the CLI flow below is recommended.
+- If CLI and web logins disagree, make sure all services were restarted from freshly built `./bin/*` binaries.
 
 ### 6. Quick End-to-End CLI Validation (recommended)
 
 In a fifth terminal:
 
 ```bash
-./client -master localhost:9000 \
+./bin/client.exe -master localhost:9000 \
   -cert certs/client-cert.pem -key certs/client-key.pem -ca certs/ca-cert.pem
 ```
 
