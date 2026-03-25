@@ -1,330 +1,298 @@
 # Distributed Password Manager on a GFS-like Fault Tolerant System
 
-A fault-tolerant password manager built on a distributed storage layer inspired by the [Google File System (GFS)](https://research.google/pubs/pub51/). Passwords are encrypted client-side with AES-256-GCM before being replicated across three chunk servers, so the servers never see plaintext credentials. The system continues operating even when chunk servers crash, and crashed servers automatically recover missed writes on restart.
+A distributed password manager inspired by Google File System ideas, with client-side encryption and replicated storage across chunk servers.
 
-Built for **CMPT 756 — Distributed and Cloud Systems**.
+Current implementation includes:
 
----
+- master endpoint failover for CLI and chunk servers
+- master epoch fencing to reject stale leader writes
+- automatic chunk primary promotion when primary fails
+- automatic failback to preferred primary when it recovers
+- frontend API failover between two master HTTP gateways in dev mode
+- clear UI state when auth is up but storage backend is unavailable
 
-## Architecture
-
-```
-  Client (CLI)
-       │
-       │  TLS 1.3 (gob-encoded messages)
-       ▼
-┌─────────────────────────────────┐
-│         MASTER NODE (:9000)     │
-│  • Chunk server registry        │
-│  • Heartbeat monitor (6s timeout)│
-│  • Primary lease tracking       │
-│  • Write-ahead log (WAL)        │
-│  • Sequence number assignment   │
-│  (stores NO password data)      │
-└──────┬──────────┬──────────┬────┘
-       │          │          │
-       ▼          ▼          ▼
-  ┌────────┐ ┌────────┐ ┌────────┐
-  │ CHUNK1 │ │ CHUNK2 │ │ CHUNK3 │
-  │(primary)│ │(replica)│ │(replica)│
-  │ :9001  │ │ :9002  │ │ :9003  │
-  └────────┘ └────────┘ └────────┘
-       │          ▲          ▲
-       └──────────┴──────────┘
-         Primary replicates
-         writes with seq numbers
-```
-
-### Components
-
-| Component | Role |
-|-----------|------|
-| **Master Node** | Lightweight coordinator. Tracks which chunk servers are alive via heartbeats, assigns sequence numbers, maintains a WAL for crash recovery. Stores no password data. |
-| **Chunk Servers (×3)** | Store encrypted password blobs on disk. The primary receives writes and replicates to the other two. Replicas only accept writes from the primary with sequence numbers newer than what they already have. |
-| **Client (CLI)** | Interactive command-line tool. Encrypts passwords locally with AES-256-GCM before sending to storage. Decrypts locally on retrieval. The vault key never leaves the client. |
+Built for CMPT 756 Distributed and Cloud Systems.
 
 ---
 
-## Security Design
+## Architecture Overview
 
-| Layer | Mechanism |
-|-------|-----------|
-| **Password hashing** | bcrypt (cost 10) for user master passwords |
-| **Vault key derivation** | PBKDF2-HMAC-SHA256 (100,000 iterations) from master password + random salt |
-| **Entry encryption** | AES-256-GCM with random nonce — encrypted client-side before data leaves the machine |
-| **Transport** | Mutual TLS 1.3 on every connection (server ↔ server and client ↔ server) |
-| **Zero-knowledge storage** | Chunk servers only store encrypted blobs; they cannot read passwords |
+```
+                CLI / Web Client
+                        |
+                        | HTTPS (REST) and TLS (gob)
+                        v
+         +-------------------------------+
+         | Active Master (9000 / 8443)  |
+         | - chunk registry + liveness  |
+         | - seq number allocator       |
+         | - epoch + primary selection  |
+         | - WAL                         |
+         +-------------------------------+
+                 ^                \
+                 | failover list   \ standby endpoint
+         +-------------------------------+
+         | Standby Master (9100 / 9443) |
+         +-------------------------------+
+
+                chunk1   chunk2   chunk3
+                 9001     9002     9003
+                  |         |         |
+                  +---------+---------+
+                    replicated encrypted data
+```
+
+Notes:
+
+- Master stores metadata, liveness, WAL, and sequencing. It does not store plaintext passwords.
+- Chunk servers store encrypted entries on disk.
+- Clients encrypt and decrypt locally.
+
+---
+
+## Security Model
+
+- password hashing: bcrypt
+- key derivation: PBKDF2-HMAC-SHA256
+- entry encryption: AES-256-GCM (client-side)
+- gob transport between nodes: mTLS, TLS 1.3
+- HTTP gateway transport: TLS 1.2+ for browser compatibility
+
+---
+
+## Major Features Implemented
+
+### 1) Master endpoint failover
+
+- chunk server and CLI support a list of candidate masters via -masters
+- on connectivity loss, they try next endpoint and re-register
+
+### 2) Primary chunk automatic re-election
+
+- when primary chunk is down, master promotes a new primary automatically
+- election rule: highest LastSeq, tie-break by chunk ID
+
+### 3) Automatic failback
+
+- preferred primary from startup flag -primary is tracked
+- when that chunk recovers and is healthy, master fails back automatically
+
+### 4) Epoch fencing
+
+- write path includes epoch values
+- stale epoch writes are rejected on chunk servers
+
+### 5) Frontend failover (dev mode)
+
+- Vite proxies:
+  - /m1 -> https://localhost:8443
+  - /m2 -> https://localhost:9443
+- web API client retries between both targets and remembers last healthy one
+
+### 6) Storage unavailable UX
+
+- login can still work when chunks are down (auth is master-backed)
+- vault screen clearly shows storage backend unavailable (0 healthy chunks)
+- write actions are disabled while no healthy chunks are available
 
 ---
 
 ## Project Structure
 
 ```
-distributed-password-manager/
-├── cmd/
-│   ├── master/main.go          # Master node entry point
-│   ├── chunkserver/main.go     # Chunk server entry point
-│   └── client/main.go          # Interactive CLI client
-├── pkg/
-│   ├── protocol/               # Shared gob message types + codec
-│   │   ├── messages.go
-│   │   └── codec.go
-│   ├── crypto/                 # TLS, AES-256-GCM, bcrypt, PBKDF2
-│   │   ├── hash.go
-│   │   ├── tls.go
-│   │   └── vault.go
-│   ├── master/                 # Master node logic
-│   │   ├── registry.go         # Chunk health tracking + heartbeat monitor
-│   │   ├── metadata.go         # Primary lease + global sequence counter
-│   │   ├── wal.go              # Write-ahead log for crash recovery
-│   │   └── server.go           # Network handler
-│   ├── chunk/                  # Chunk server logic
-│   │   ├── store.go            # On-disk key-value store (JSON per key)
-│   │   └── server.go           # Write, read, replicate, heartbeat
-│   ├── auth/                   # User registration + login
-│   │   └── auth.go
-│   └── vault/                  # Client-side encrypt/decrypt + CRUD
-│       └── vault.go
-├── scripts/
-│   ├── deploy-gcp.sh           # Google Cloud deployment script
-│   └── test_correctness.sh     # Automated correctness tests
-├── certs/                      # TLS certificates (generated, gitignored)
-├── data/                       # Runtime data (gitignored)
-├── gen-certs.ps1               # Certificate generation (Windows/PowerShell)
-├── gen-certs.sh                # Certificate generation (Linux/macOS)
-├── Dockerfile
-├── docker-compose.yml
-├── go.mod
-└── go.sum
+cmd/
+  master/main.go
+  chunkserver/main.go
+  client/main.go
+pkg/
+  auth/
+  chunk/
+  crypto/
+  master/
+  protocol/
+  vault/
+scripts/
+  demo_auto_failover.ps1
+  test_correctness.ps1
+  test_correctness.sh
+  deploy-gcp.sh
+web/
+  src/
+  vite.config.ts
 ```
 
 ---
 
-## Getting Started
+## Prerequisites
 
-### Prerequisites
+- Go 1.22+
+- Node.js 20+
+- certificates generated in certs/
 
-- **Go 1.26.1+**
-- **Node.js 20+** (for frontend build/dev)
-- **OpenSSL** (included with [Git for Windows](https://gitforwindows.org/))
+Generate certs:
 
-### 1. Clone the repository
+Windows:
 
-```bash
-git clone https://github.com/coolman7893/distributed-password-manager.git
-cd distributed-password-manager
-```
-
-### 2. Generate TLS certificates
-
-**Windows (PowerShell):**
 ```powershell
 .\gen-certs.ps1
 ```
 
-**Linux/macOS:**
+Linux or macOS:
+
 ```bash
 bash gen-certs.sh
 ```
 
-This creates mutual TLS certificates in `certs/`.
+---
 
-### 3. Build the binaries
+## Build
 
-```bash
-mkdir -p bin
-go build -o ./bin/master.exe ./cmd/master
-go build -o ./bin/chunk.exe ./cmd/chunkserver
-go build -o ./bin/client.exe ./cmd/client
+Windows:
+
+```powershell
+go build -o .\bin\master.exe .\cmd\master
+go build -o .\bin\chunk.exe .\cmd\chunkserver
+go build -o .\bin\client.exe .\cmd\client
 ```
 
-On Linux/macOS, omit the `.exe` extension.
+---
 
-### 4. Start the system
+## Run: Single-Master Basic Mode
 
-Open **four** terminals:
+Master:
 
-**Terminal 1 — Master:**
-```bash
-./bin/master.exe -addr :9000 -primary chunk1 \
-  -wal ./data/master/wal.json \
-  -cert certs/server-cert.pem -key certs/server-key.pem -ca certs/ca-cert.pem
+```powershell
+.\bin\master.exe -addr :9000 -primary chunk1 -wal .\data\master\wal.json -http :8443 -cert .\certs\server-cert.pem -key .\certs\server-key.pem -ca .\certs\ca-cert.pem -users .\data\users.json
 ```
 
-**Terminal 2 — Chunk Server 1 (primary):**
-```bash
-./bin/chunk.exe -id chunk1 -addr :9001 -master localhost:9000 \
-  -data ./data/chunk1 \
-  -cert certs/server-cert.pem -key certs/server-key.pem -ca certs/ca-cert.pem
+Chunk servers:
+
+```powershell
+.\bin\chunk.exe -id chunk1 -addr :9001 -master localhost:9000 -data .\data\chunk1 -cert .\certs\server-cert.pem -key .\certs\server-key.pem -ca .\certs\ca-cert.pem
+.\bin\chunk.exe -id chunk2 -addr :9002 -master localhost:9000 -data .\data\chunk2 -cert .\certs\server-cert.pem -key .\certs\server-key.pem -ca .\certs\ca-cert.pem
+.\bin\chunk.exe -id chunk3 -addr :9003 -master localhost:9000 -data .\data\chunk3 -cert .\certs\server-cert.pem -key .\certs\server-key.pem -ca .\certs\ca-cert.pem
 ```
 
-**Terminal 3 — Chunk Server 2:**
-```bash
-./bin/chunk.exe -id chunk2 -addr :9002 -master localhost:9000 \
-  -data ./data/chunk2 \
-  -cert certs/server-cert.pem -key certs/server-key.pem -ca certs/ca-cert.pem
+CLI:
+
+```powershell
+.\bin\client.exe -master localhost:9000 -cert .\certs\client-cert.pem -key .\certs\client-key.pem -ca .\certs\ca-cert.pem
 ```
 
-**Terminal 4 — Chunk Server 3:**
-```bash
-./bin/chunk.exe -id chunk3 -addr :9003 -master localhost:9000 \
-  -data ./data/chunk3 \
-  -cert certs/server-cert.pem -key certs/server-key.pem -ca certs/ca-cert.pem
+---
+
+## Run: Failover Mode (Active + Standby Masters)
+
+Master 1 (active):
+
+```powershell
+.\bin\master.exe -addr :9000 -primary chunk1 -epoch 100 -wal .\data\master\wal-shared.json -users .\data\users.json -http :8443 -cert .\certs\server-cert.pem -key .\certs\server-key.pem -ca .\certs\ca-cert.pem
 ```
 
-### 5. Start the Frontend (optional)
+Master 2 (standby endpoint):
 
-```bash
-cd web
+```powershell
+.\bin\master.exe -addr :9100 -primary chunk1 -epoch 200 -wal .\data\master\wal-shared.json -users .\data\users.json -http :9443 -cert .\certs\server-cert.pem -key .\certs\server-key.pem -ca .\certs\ca-cert.pem
+```
+
+Chunk servers (with candidate masters):
+
+```powershell
+.\bin\chunk.exe -id chunk1 -addr :9001 -master localhost:9000 -masters localhost:9000,localhost:9100 -data .\data\chunk1 -cert .\certs\server-cert.pem -key .\certs\server-key.pem -ca .\certs\ca-cert.pem
+.\bin\chunk.exe -id chunk2 -addr :9002 -master localhost:9000 -masters localhost:9000,localhost:9100 -data .\data\chunk2 -cert .\certs\server-cert.pem -key .\certs\server-key.pem -ca .\certs\ca-cert.pem
+.\bin\chunk.exe -id chunk3 -addr :9003 -master localhost:9000 -masters localhost:9000,localhost:9100 -data .\data\chunk3 -cert .\certs\server-cert.pem -key .\certs\server-key.pem -ca .\certs\ca-cert.pem
+```
+
+CLI (with candidate masters):
+
+```powershell
+.\bin\client.exe -master localhost:9000 -masters localhost:9000,localhost:9100 -cert .\certs\client-cert.pem -key .\certs\client-key.pem -ca .\certs\ca-cert.pem
+```
+
+Kill active master only:
+
+```powershell
+$pid9000 = (Get-NetTCPConnection -LocalPort 9000 -State Listen).OwningProcess
+Stop-Process -Id $pid9000 -Force
+```
+
+Expected:
+
+- chunk servers re-register to master2
+- CLI continues working via fallback
+- UI continues in dev mode via /m2 proxy path
+
+---
+
+## Frontend
+
+Run dev server:
+
+```powershell
+cd .\web
 npm install
-npm run build
 npm run dev
 ```
 
-Open http://localhost:3000 in your browser.
+Open:
 
-Notes:
-- The built frontend is also served by the master on `https://localhost:8443` (default `-http` in `cmd/master/main.go`).
-- The master HTTPS REST/web endpoint accepts normal HTTPS clients (no browser client certificate setup required).
-- For straightforward local validation, the CLI flow below is recommended.
-- If CLI and web logins disagree, make sure all services were restarted from freshly built `./bin/*` binaries.
+- http://localhost:3000
 
-### 6. Quick End-to-End CLI Validation (recommended)
+Important behavior:
 
-In a fifth terminal:
+- login can succeed even if chunks are down
+- vault data operations require healthy chunk servers
+- UI now shows explicit storage unavailable status instead of silent empty list
 
-```bash
-./bin/client.exe -master localhost:9000 \
-  -cert certs/client-cert.pem -key certs/client-key.pem -ca certs/ca-cert.pem
+---
+
+## Scripts
+
+- scripts/demo_auto_failover.ps1
+  - starts active and standby masters, starts chunks, performs client operations
+  - kills active master and verifies continued reads
+
+- scripts/test_correctness.ps1 and scripts/test_correctness.sh
+  - CRUD, replication, failure scenarios, and concurrency checks
+
+- scripts/deploy-gcp.sh
+  - deploys topology to GCP VMs
+
+---
+
+## Health and Troubleshooting
+
+Health probes:
+
+```powershell
+curl.exe -k https://localhost:8443/health
+curl.exe -k https://localhost:9443/health
 ```
 
-Then run: `register`, `login`, `save`, `get`, `list`, `delete`.
+If neither responds:
 
-### 7. Use the Web Interface
+- master process is not running or failed startup
 
-- **Register**: Create a new account with username and master password
-- **Login**: Authenticate to access your vault
-- **Save**: Store a new password entry (site, username, password)
-- **Get**: Retrieve a password by site name
-- **List**: View all stored sites
-- **Delete**: Remove a password entry
-- **Logout**: End session
+If login works but vault looks empty:
 
----
+- check chunk health
+- with no healthy chunks, this is expected and now shown in UI
 
-## Fault Tolerance Demonstrations
+If UI fails while CLI works during failover:
 
-### Test 1: Replica Failure + Recovery
-
-1. Save a few passwords normally
-2. Kill one replica (e.g., chunk3): `Stop-Process` or `kill`
-3. Save more passwords — **writes still succeed** via the primary and remaining replica
-4. Restart chunk3 — it re-registers with the master and **automatically recovers missed writes**
-5. Master log shows: `sending N recovery entries to chunk chunk3`
-
-### Test 2: Primary Failure
-
-1. Kill the primary (chunk1)
-2. Attempt to save — client reports: `primary unavailable — writes temporarily disabled`
-3. Attempt to read — **reads still work** from chunk2 or chunk3
-4. Restart chunk1 — writes resume immediately
-
-### Test 3: Concurrent Writes
-
-1. Open multiple client instances simultaneously
-2. Save different passwords from each client at the same time
-3. Run `list` — all entries are present with no data loss or corruption
-
-### Test 4: Data Replication Verification
-
-1. Save a password
-2. Check each chunk server's `data/` directory — all three contain the same encrypted entry file
-3. The encrypted contents are identical across replicas
+- restart Vite after config changes
+- ensure masters are on 8443 and 9443
 
 ---
 
-## How It Works
+## Current Limitations
 
-### Write Path
-1. Client encrypts the password entry with AES-256-GCM using a key derived from the master password
-2. Client asks the master: "Who is the primary?"
-3. Master responds with the primary address, replica addresses, and a new sequence number
-4. Client sends the encrypted blob to the primary chunk server
-5. Primary saves to disk, then replicates to both replicas with the sequence number
-6. Replicas only apply the write if the sequence number is newer than what they have
-7. Client notifies the master to record the write in the WAL (for future crash recovery)
-
-### Read Path
-1. Client asks the master for any healthy chunk server
-2. Master returns a healthy chunk address (round-robin)
-3. Client reads the encrypted blob from that chunk
-4. Client decrypts locally with the vault key
-
-### Crash Recovery
-1. When a chunk server restarts, it re-registers with the master, reporting its last sequence number
-2. The master checks its WAL and sends all entries with sequence numbers greater than what the chunk has
-3. The chunk applies the missed writes and is fully caught up
-
-### Heartbeat Monitoring
-- Each chunk server sends a heartbeat to the master every **2 seconds**
-- If the master doesn't receive a heartbeat for **6 seconds**, it marks the chunk as **DEAD**
-- Dead chunks are excluded from read routing and replica lists
-
----
-
-## Google Cloud Deployment
-
-See [scripts/deploy-gcp.sh](scripts/deploy-gcp.sh) for automated deployment to 4 GCE VMs across different zones.
-
-```bash
-export GCP_PROJECT=your-project-id
-bash scripts/deploy-gcp.sh
-```
-
-This creates:
-- 1 master VM in `us-central1-a`
-- 3 chunk server VMs in `us-east1-b`, `us-west1-a`, `europe-west1-b`
-
-Each chunk server is in a **different zone/region** so a single data center failure only takes down one replica.
-
----
-
-## Docker Compose (Alternative)
-
-If Docker is available:
-
-```bash
-docker compose up --build
-```
-
-This starts the master and 3 chunk servers on a single machine for local testing.
-
----
-
-## Key Design Decisions
-
-| Problem | Solution |
-|---------|----------|
-| Master knows chunk health | Heartbeats every 2s; dead after 6s of silence |
-| Write ordering across replicas | Master assigns global sequence numbers; replicas reject stale writes |
-| Crashed server recovery | WAL on master; chunk reports last seq on re-register; master replays missed entries |
-| Data confidentiality | AES-256-GCM encryption on client before data leaves the machine |
-| Transport security | Mutual TLS 1.3 on all connections |
-| Password authentication | bcrypt hash on disk; vault key derived via PBKDF2, held in memory only during session |
-
----
-
-## Tech Stack
-
-- **Language:** Go 1.22+
-- **Serialization:** Go's built-in `encoding/gob` over TCP
-- **Encryption:** AES-256-GCM (vault), bcrypt (passwords), PBKDF2-HMAC-SHA256 (key derivation)
-- **Transport:** TLS 1.3 with mutual authentication
-- **Storage:** JSON files on disk (one per key per chunk server)
-- **Deployment:** Native binaries, Docker Compose, or Google Cloud VMs
+- HTTP auth sessions are in-memory per master process
+- after master switch, web users may need to log in again
+- docker-compose.yml currently describes a single-master topology (not dual-master failover mode)
 
 ---
 
 ## License
 
-This project was built for academic purposes as part of CMPT 756.
+Academic project for CMPT 756.
