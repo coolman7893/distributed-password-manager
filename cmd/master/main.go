@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/coolman7893/distributed-password-manager/pkg/auth"
 	appCrypto "github.com/coolman7893/distributed-password-manager/pkg/crypto"
@@ -16,6 +17,7 @@ func main() {
 	addr := flag.String("addr", ":9000", "Listen address (gob/TLS)")
 	httpAddr := flag.String("http", ":8443", "HTTPS listen address for REST API + web UI (empty to disable)")
 	primaryID := flag.String("primary", "chunk1", "Primary chunk ID")
+	epoch := flag.Uint64("epoch", 0, "Master fencing epoch (0 uses current unix time)")
 	walPath := flag.String("wal", "./data/master/wal.json", "WAL file path")
 	certFile := flag.String("cert", "certs/server-cert.pem", "TLS cert")
 	keyFile := flag.String("key", "certs/server-key.pem", "TLS key")
@@ -44,12 +46,17 @@ func main() {
 		log.Fatalf("User store: %v", err)
 	}
 
+	masterEpoch := *epoch
+	if masterEpoch == 0 {
+		masterEpoch = uint64(time.Now().Unix())
+	}
+
 	registry := master.NewRegistry()
 
 	srv := &master.Server{
 		Addr:      *addr,
 		Registry:  registry,
-		Meta:      master.NewMetadata(*primaryID),
+		Meta:      master.NewMetadata(*primaryID, masterEpoch),
 		WAL:       wal,
 		TLSConfig: tlsCfg,
 	}
@@ -61,13 +68,15 @@ func main() {
 		httpTLSCfg := tlsCfg.Clone()
 		httpTLSCfg.ClientAuth = tls.NoClientCert
 		httpTLSCfg.ClientCAs = nil
+		httpTLSCfg.MinVersion = tls.VersionTLS12
 
 		httpSrv := &master.HTTPServer{
-			Addr:       *httpAddr,
-			MasterAddr: "localhost" + *addr,
-			TLSConfig:  httpTLSCfg,
-			UserStore:  userStore,
-			StaticDir:  *staticDir,
+			Addr:        *httpAddr,
+			MasterAddr:  "localhost" + *addr,
+			MasterAddrs: []string{"localhost" + *addr},
+			TLSConfig:   httpTLSCfg,
+			UserStore:   userStore,
+			StaticDir:   *staticDir,
 			RegistryProbe: func() int {
 				return len(registry.AliveChunks())
 			},

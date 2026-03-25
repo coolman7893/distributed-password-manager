@@ -40,7 +40,7 @@ func (r *Registry) Register(id, addr string, lastSeq uint64) {
 	log.Printf("[master] registered chunk %s at %s (lastSeq=%d)", id, addr, lastSeq)
 }
 
-func (r *Registry) Heartbeat(id, addr string) {
+func (r *Registry) Heartbeat(id, addr string, lastSeq uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if c, ok := r.chunks[id]; ok {
@@ -48,10 +48,25 @@ func (r *Registry) Heartbeat(id, addr string) {
 		c.LastBeat = time.Now()
 		c.Alive = true
 		c.Addr = addr
+		if lastSeq > c.LastSeq {
+			c.LastSeq = lastSeq
+		}
 		if wasDown {
 			log.Printf("[master] chunk %s is back ALIVE", id)
 		}
+		return
 	}
+
+	// Accept first heartbeat as implicit registration so a fresh master
+	// can rebuild liveness even if explicit RegisterChunk is delayed.
+	r.chunks[id] = &ChunkInfo{
+		ID:       id,
+		Addr:     addr,
+		LastBeat: time.Now(),
+		Alive:    true,
+		LastSeq:  lastSeq,
+	}
+	log.Printf("[master] inferred chunk %s at %s from heartbeat", id, addr)
 }
 
 func (r *Registry) AliveChunks() []*ChunkInfo {

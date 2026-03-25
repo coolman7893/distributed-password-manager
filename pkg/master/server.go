@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"log"
 	"net"
+	"sort"
 	"sync/atomic"
 
 	"github.com/coolman7893/distributed-password-manager/pkg/protocol"
@@ -49,7 +50,8 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	switch req := msg.(type) {
 	case protocol.HeartbeatMsg:
-		s.Registry.Heartbeat(req.ChunkID, req.Addr)
+		s.Registry.Heartbeat(req.ChunkID, req.Addr, req.LastSeq)
+		s.electPrimaryIfNeeded()
 
 	case protocol.RegisterChunkRequest:
 		s.handleRegister(conn, req)
@@ -71,6 +73,71 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 }
 
+func choosePrimaryCandidate(alive []*ChunkInfo) *ChunkInfo {
+	if len(alive) == 0 {
+		return nil
+	}
+
+	ordered := append([]*ChunkInfo(nil), alive...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].LastSeq != ordered[j].LastSeq {
+			return ordered[i].LastSeq > ordered[j].LastSeq
+		}
+		return ordered[i].ID < ordered[j].ID
+	})
+	return ordered[0]
+}
+
+func (s *Server) electPrimaryIfNeeded() (string, []string) {
+	alive := s.Registry.AliveChunks()
+	if len(alive) == 0 {
+		return "", nil
+	}
+
+	currentPrimary := s.Meta.PrimaryID()
+	preferredPrimary := s.Meta.PreferredPrimaryID()
+
+	aliveByID := make(map[string]*ChunkInfo, len(alive))
+	for _, c := range alive {
+		aliveByID[c.ID] = c
+	}
+
+	if currentPrimary != "" {
+		if _, ok := aliveByID[currentPrimary]; !ok {
+			candidate := choosePrimaryCandidate(alive)
+			if candidate != nil {
+				if epoch, changed := s.Meta.SetPrimary(candidate.ID); changed {
+					log.Printf("[master] PRIMARY_PROMOTED old=%s new=%s reason=primary-down epoch=%d candidateLastSeq=%d", currentPrimary, candidate.ID, epoch, candidate.LastSeq)
+				}
+			}
+		}
+	}
+
+	// Auto-failback: if preferred primary is alive and not currently selected,
+	// promote it back immediately.
+	if preferredPrimary != "" && preferredPrimary != s.Meta.PrimaryID() {
+		if preferred, ok := aliveByID[preferredPrimary]; ok {
+			old := s.Meta.PrimaryID()
+			if epoch, changed := s.Meta.SetPrimary(preferred.ID); changed {
+				log.Printf("[master] PRIMARY_FAILBACK old=%s new=%s reason=preferred-recovered epoch=%d preferredLastSeq=%d", old, preferred.ID, epoch, preferred.LastSeq)
+			}
+		}
+	}
+
+	primaryID := s.Meta.PrimaryID()
+	var primaryAddr string
+	var replicas []string
+	for _, c := range alive {
+		if c.ID == primaryID {
+			primaryAddr = c.Addr
+		} else {
+			replicas = append(replicas, c.Addr)
+		}
+	}
+
+	return primaryAddr, replicas
+}
+
 func (s *Server) handleRegister(conn net.Conn, req protocol.RegisterChunkRequest) {
 	s.Registry.Register(req.ChunkID, req.Addr, req.LastSeqNum)
 
@@ -90,18 +157,8 @@ func (s *Server) handleRegister(conn net.Conn, req protocol.RegisterChunkRequest
 }
 
 func (s *Server) handleGetPrimary(conn net.Conn, req protocol.GetPrimaryRequest) {
+	primaryAddr, replicas := s.electPrimaryIfNeeded()
 	primaryID := s.Meta.PrimaryID()
-	alive := s.Registry.AliveChunks()
-
-	var primaryAddr string
-	var replicas []string
-	for _, c := range alive {
-		if c.ID == primaryID {
-			primaryAddr = c.Addr
-		} else {
-			replicas = append(replicas, c.Addr)
-		}
-	}
 
 	if primaryAddr == "" {
 		log.Printf("[master] primary %s is DOWN — writes unavailable", primaryID)
@@ -116,10 +173,13 @@ func (s *Server) handleGetPrimary(conn net.Conn, req protocol.GetPrimaryRequest)
 		PrimaryAddr: primaryAddr,
 		Replicas:    replicas,
 		SeqNum:      seqNum,
+		Epoch:       s.Meta.Epoch(),
 	})
 }
 
 func (s *Server) handleGetChunk(conn net.Conn, req protocol.GetChunkRequest) {
+	s.electPrimaryIfNeeded()
+
 	alive := s.Registry.AliveChunks()
 	if len(alive) == 0 {
 		protocol.Send(conn, protocol.GetChunkResponse{OK: false})
@@ -132,6 +192,8 @@ func (s *Server) handleGetChunk(conn net.Conn, req protocol.GetChunkRequest) {
 }
 
 func (s *Server) handleListKeys(conn net.Conn, req protocol.ListKeysRequest) {
+	s.electPrimaryIfNeeded()
+
 	// Forward to any alive chunk
 	alive := s.Registry.AliveChunks()
 	if len(alive) == 0 {
@@ -157,6 +219,10 @@ func (s *Server) handleListKeys(conn net.Conn, req protocol.ListKeysRequest) {
 }
 
 func (s *Server) handleWALNotify(req protocol.WALNotify) {
+	if req.Epoch != s.Meta.Epoch() {
+		log.Printf("[master] ignored stale WAL notify key=%s seq=%d epoch=%d current=%d", req.Key, req.SeqNum, req.Epoch, s.Meta.Epoch())
+		return
+	}
 	s.WAL.Append(req.Key, req.Value, req.SeqNum, req.Delete)
 	log.Printf("[master] WAL recorded key=%s seq=%d delete=%v", req.Key, req.SeqNum, req.Delete)
 }

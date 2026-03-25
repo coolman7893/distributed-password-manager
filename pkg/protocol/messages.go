@@ -29,6 +29,7 @@ func init() {
 type HeartbeatMsg struct {
 	ChunkID string
 	Addr    string
+	LastSeq uint64
 }
 
 // --- Chunk registration ---
@@ -53,6 +54,7 @@ type GetPrimaryResponse struct {
 	PrimaryAddr string
 	Replicas    []string
 	SeqNum      uint64 // next sequence number assigned by master
+	Epoch       uint64 // fencing epoch for the current active master
 }
 
 // --- Master: give me a healthy chunk to READ from ---
@@ -72,6 +74,7 @@ type WriteRequest struct {
 	Key    string
 	Value  []byte
 	SeqNum uint64
+	Epoch  uint64
 }
 
 type WriteResponse struct {
@@ -85,6 +88,7 @@ type WriteResponse struct {
 type DeleteRequest struct {
 	Key    string
 	SeqNum uint64
+	Epoch  uint64
 }
 
 type DeleteResponse struct {
@@ -99,6 +103,7 @@ type ReplicateRequest struct {
 	Value  []byte
 	SeqNum uint64
 	Delete bool
+	Epoch  uint64
 }
 
 type ReplicateResponse struct {
@@ -148,4 +153,5 @@ type WALNotify struct {
 	Value  []byte
 	SeqNum uint64
 	Delete bool
+	Epoch  uint64
 }
