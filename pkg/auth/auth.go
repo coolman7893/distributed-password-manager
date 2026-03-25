@@ -41,6 +41,11 @@ func (s *UserStore) Register(username, password string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Refresh in-memory users so registrations from other processes are visible.
+	if err := s.reloadFromDiskLocked(); err != nil {
+		return err
+	}
+
 	if _, exists := s.users[username]; exists {
 		return fmt.Errorf("user already exists")
 	}
@@ -65,8 +70,13 @@ func (s *UserStore) Register(username, password string) error {
 
 // Login verifies the password and returns the derived vault key.
 func (s *UserStore) Login(username, password string) (vaultKey []byte, salt []byte, err error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Refresh in-memory users so logins from other processes are visible.
+	if err := s.reloadFromDiskLocked(); err != nil {
+		return nil, nil, err
+	}
 
 	user, ok := s.users[username]
 	if !ok {
@@ -83,8 +93,12 @@ func (s *UserStore) Login(username, password string) (vaultKey []byte, salt []by
 
 // GetUser returns the user struct for the given username.
 func (s *UserStore) GetUser(username string) (*User, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.reloadFromDiskLocked(); err != nil {
+		return nil, err
+	}
 
 	user, ok := s.users[username]
 	if !ok {
@@ -100,4 +114,28 @@ func (s *UserStore) persist() error {
 		return err
 	}
 	return os.WriteFile(s.path, data, 0600)
+}
+
+func (s *UserStore) reloadFromDiskLocked() error {
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.users = make(map[string]*User)
+			return nil
+		}
+		return err
+	}
+
+	if len(data) == 0 {
+		s.users = make(map[string]*User)
+		return nil
+	}
+
+	latest := make(map[string]*User)
+	if err := json.Unmarshal(data, &latest); err != nil {
+		return err
+	}
+
+	s.users = latest
+	return nil
 }
