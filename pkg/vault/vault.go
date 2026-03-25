@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	appCrypto "github.com/coolman7893/distributed-password-manager/pkg/crypto"
 	"github.com/coolman7893/distributed-password-manager/pkg/protocol"
@@ -21,19 +22,95 @@ type PasswordEntry struct {
 // and talks to the distributed chunk storage via the master node.
 type Client struct {
 	MasterAddr string
-	TLSConfig  *tls.Config
-	VaultKey   []byte // derived from master password, in-memory only
-	Username   string
+	// MasterAddrs are candidate endpoints for the single active master.
+	MasterAddrs []string
+	TLSConfig   *tls.Config
+	VaultKey    []byte // derived from master password, in-memory only
+	Username    string
+	mu          sync.RWMutex
 }
 
 // NewClient creates a new vault client.
 func NewClient(masterAddr string, tlsConfig *tls.Config, vaultKey []byte, username string) (*Client, error) {
 	return &Client{
-		MasterAddr: masterAddr,
-		TLSConfig:  tlsConfig,
-		VaultKey:   vaultKey,
-		Username:   username,
+		MasterAddr:  masterAddr,
+		MasterAddrs: []string{masterAddr},
+		TLSConfig:   tlsConfig,
+		VaultKey:    vaultKey,
+		Username:    username,
 	}, nil
+}
+
+func (c *Client) normalizedMasterAddrs() []string {
+	if len(c.MasterAddrs) == 0 {
+		if strings.TrimSpace(c.MasterAddr) == "" {
+			return nil
+		}
+		return []string{c.MasterAddr}
+	}
+
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(c.MasterAddrs)+1)
+	for _, addr := range c.MasterAddrs {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			continue
+		}
+		if _, ok := seen[addr]; ok {
+			continue
+		}
+		seen[addr] = struct{}{}
+		out = append(out, addr)
+	}
+	if len(out) == 0 && strings.TrimSpace(c.MasterAddr) != "" {
+		out = append(out, c.MasterAddr)
+	}
+	return out
+}
+
+func (c *Client) currentMasterAddr() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.MasterAddr
+}
+
+func (c *Client) setCurrentMasterAddr(addr string) {
+	c.mu.Lock()
+	c.MasterAddr = addr
+	c.mu.Unlock()
+}
+
+func (c *Client) dialAnyMaster() (*tls.Conn, string, error) {
+	addrs := c.normalizedMasterAddrs()
+	if len(addrs) == 0 {
+		return nil, "", fmt.Errorf("no master address configured")
+	}
+
+	if current := strings.TrimSpace(c.currentMasterAddr()); current != "" {
+		ordered := []string{current}
+		for _, addr := range addrs {
+			if addr != current {
+				ordered = append(ordered, addr)
+			}
+		}
+		addrs = ordered
+	}
+
+	var lastErr error
+	for _, addr := range addrs {
+		conn, err := tls.Dial("tcp", addr, c.TLSConfig)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		c.setCurrentMasterAddr(addr)
+		return conn, addr, nil
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("unable to connect to any configured master")
+	}
+	return nil, "", lastErr
 }
 
 // Save encrypts a password entry client-side, then writes it through the primary chunk.
@@ -50,7 +127,7 @@ func (c *Client) Save(entry PasswordEntry) error {
 	key := c.entryKey(entry.Site)
 
 	// Ask master for primary + seq number
-	primary, _, seqNum, err := c.getPrimary(key)
+	primary, _, seqNum, epoch, err := c.getPrimary(key)
 	if err != nil {
 		return err
 	}
@@ -69,6 +146,7 @@ func (c *Client) Save(entry PasswordEntry) error {
 		Key:    key,
 		Value:  ciphertext,
 		SeqNum: seqNum,
+		Epoch:  epoch,
 	})
 
 	resp, err := protocol.Receive(conn)
@@ -85,7 +163,7 @@ func (c *Client) Save(entry PasswordEntry) error {
 	}
 
 	// Notify master to record in WAL
-	c.notifyMasterWAL(key, ciphertext, seqNum, false)
+	c.notifyMasterWAL(key, ciphertext, seqNum, false, epoch)
 
 	return nil
 }
@@ -132,7 +210,7 @@ func (c *Client) Get(site string) (*PasswordEntry, error) {
 func (c *Client) Delete(site string) error {
 	key := c.entryKey(site)
 
-	primary, _, seqNum, err := c.getPrimary(key)
+	primary, _, seqNum, epoch, err := c.getPrimary(key)
 	if err != nil {
 		return err
 	}
@@ -146,7 +224,7 @@ func (c *Client) Delete(site string) error {
 	}
 	defer conn.Close()
 
-	protocol.Send(conn, protocol.DeleteRequest{Key: key, SeqNum: seqNum})
+	protocol.Send(conn, protocol.DeleteRequest{Key: key, SeqNum: seqNum, Epoch: epoch})
 
 	resp, err := protocol.Receive(conn)
 	if err != nil {
@@ -157,7 +235,7 @@ func (c *Client) Delete(site string) error {
 		return fmt.Errorf("delete failed")
 	}
 
-	c.notifyMasterWAL(key, nil, seqNum, true)
+	c.notifyMasterWAL(key, nil, seqNum, true, epoch)
 	return nil
 }
 
@@ -165,7 +243,7 @@ func (c *Client) Delete(site string) error {
 func (c *Client) List() ([]string, error) {
 	prefix := c.Username + "/"
 
-	conn, err := tls.Dial("tcp", c.MasterAddr, c.TLSConfig)
+	conn, _, err := c.dialAnyMaster()
 	if err != nil {
 		return nil, err
 	}
@@ -198,27 +276,27 @@ func (c *Client) entryKey(site string) string {
 	return c.Username + "/" + site
 }
 
-func (c *Client) getPrimary(key string) (string, []string, uint64, error) {
-	conn, err := tls.Dial("tcp", c.MasterAddr, c.TLSConfig)
+func (c *Client) getPrimary(key string) (string, []string, uint64, uint64, error) {
+	conn, _, err := c.dialAnyMaster()
 	if err != nil {
-		return "", nil, 0, err
+		return "", nil, 0, 0, err
 	}
 	defer conn.Close()
 
 	protocol.Send(conn, protocol.GetPrimaryRequest{Key: key})
 	resp, err := protocol.Receive(conn)
 	if err != nil {
-		return "", nil, 0, err
+		return "", nil, 0, 0, err
 	}
 	r, ok := resp.(protocol.GetPrimaryResponse)
 	if !ok {
-		return "", nil, 0, fmt.Errorf("unexpected response from master")
+		return "", nil, 0, 0, fmt.Errorf("unexpected response from master")
 	}
-	return r.PrimaryAddr, r.Replicas, r.SeqNum, nil
+	return r.PrimaryAddr, r.Replicas, r.SeqNum, r.Epoch, nil
 }
 
 func (c *Client) getChunk(key string) (string, error) {
-	conn, err := tls.Dial("tcp", c.MasterAddr, c.TLSConfig)
+	conn, _, err := c.dialAnyMaster()
 	if err != nil {
 		return "", err
 	}
@@ -240,8 +318,8 @@ func (c *Client) getChunk(key string) (string, error) {
 // This uses a separate message type — the master handles it via GetPrimary
 // but we record the data by sending a write notification.
 // For simplicity we re-use the WAL append path on the master side.
-func (c *Client) notifyMasterWAL(key string, value []byte, seqNum uint64, isDelete bool) {
-	conn, err := tls.Dial("tcp", c.MasterAddr, c.TLSConfig)
+func (c *Client) notifyMasterWAL(key string, value []byte, seqNum uint64, isDelete bool, epoch uint64) {
+	conn, _, err := c.dialAnyMaster()
 	if err != nil {
 		return
 	}
@@ -252,5 +330,6 @@ func (c *Client) notifyMasterWAL(key string, value []byte, seqNum uint64, isDele
 		Value:  value,
 		SeqNum: seqNum,
 		Delete: isDelete,
+		Epoch:  epoch,
 	})
 }

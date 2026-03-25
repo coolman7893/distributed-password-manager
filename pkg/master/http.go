@@ -97,6 +97,8 @@ type HTTPServer struct {
 
 	// MasterAddr is the TCP address of the master's gob server, e.g. "localhost:9000".
 	MasterAddr string
+	// MasterAddrs are candidate endpoints for the single active master.
+	MasterAddrs []string
 
 	// TLSConfig is shared with the master (same cert/key/CA).
 	TLSConfig *tls.Config
@@ -256,12 +258,16 @@ func (h *HTTPServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 // ─── vault handlers ───────────────────────────────────────────────────────────
 
 func (h *HTTPServer) newVaultClient(sess *httpSession) *vault.Client {
-	return &vault.Client{
+	client := &vault.Client{
 		MasterAddr: h.MasterAddr,
 		TLSConfig:  h.TLSConfig,
 		VaultKey:   sess.vaultKey,
 		Username:   sess.username,
 	}
+	if len(h.MasterAddrs) > 0 {
+		client.MasterAddrs = h.MasterAddrs
+	}
+	return client
 }
 
 func (h *HTTPServer) handleList(w http.ResponseWriter, r *http.Request) {

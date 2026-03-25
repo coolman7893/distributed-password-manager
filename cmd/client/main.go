@@ -15,11 +15,22 @@ import (
 
 func main() {
 	masterAddr := flag.String("master", "localhost:9000", "Master address")
+	masters := flag.String("masters", "", "Comma-separated candidate master addresses for failover")
 	certFile := flag.String("cert", "certs/client-cert.pem", "TLS cert")
 	keyFile := flag.String("key", "certs/client-key.pem", "TLS key")
 	caFile := flag.String("ca", "certs/ca-cert.pem", "CA cert")
 	usersFile := flag.String("users", "./data/users.json", "User store path")
 	flag.Parse()
+
+	masterAddrs := []string{}
+	if strings.TrimSpace(*masters) != "" {
+		for _, candidate := range strings.Split(*masters, ",") {
+			candidate = strings.TrimSpace(candidate)
+			if candidate != "" {
+				masterAddrs = append(masterAddrs, candidate)
+			}
+		}
+	}
 
 	tlsCfg, err := appCrypto.LoadTLSConfig(*certFile, *keyFile, *caFile, false)
 	if err != nil {
@@ -79,10 +90,11 @@ func main() {
 				continue
 			}
 			vaultClient = &vault.Client{
-				MasterAddr: *masterAddr,
-				TLSConfig:  tlsCfg,
-				VaultKey:   key,
-				Username:   username,
+				MasterAddr:  *masterAddr,
+				MasterAddrs: masterAddrs,
+				TLSConfig:   tlsCfg,
+				VaultKey:    key,
+				Username:    username,
 			}
 			fmt.Println("Logged in. Commands: save, get, list, delete, logout")
 
