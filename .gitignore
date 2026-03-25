@@ -1,6 +1,8 @@
 # Binaries
 bin/
 *.exe
+*.exe~
+*~
 
 # Data directories
 data/
