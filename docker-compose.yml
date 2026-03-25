@@ -1,0 +1,58 @@
+version: "3.9"
+
+services:
+  master:
+    build: .
+    command: >
+      master -addr :9000 -primary chunk1
+      -cert /certs/server-cert.pem -key /certs/server-key.pem -ca /certs/ca-cert.pem
+      -wal /data/wal.json
+    ports:
+      - "9000:9000"
+    volumes:
+      - master-data:/data
+
+  chunk1:
+    build: .
+    command: >
+      chunk -id chunk1 -addr :9001 -master master:9000
+      -cert /certs/server-cert.pem -key /certs/server-key.pem -ca /certs/ca-cert.pem
+      -data /data
+    ports:
+      - "9001:9001"
+    volumes:
+      - chunk1-data:/data
+    depends_on:
+      - master
+
+  chunk2:
+    build: .
+    command: >
+      chunk -id chunk2 -addr :9002 -master master:9000
+      -cert /certs/server-cert.pem -key /certs/server-key.pem -ca /certs/ca-cert.pem
+      -data /data
+    ports:
+      - "9002:9002"
+    volumes:
+      - chunk2-data:/data
+    depends_on:
+      - master
+
+  chunk3:
+    build: .
+    command: >
+      chunk -id chunk3 -addr :9003 -master master:9000
+      -cert /certs/server-cert.pem -key /certs/server-key.pem -ca /certs/ca-cert.pem
+      -data /data
+    ports:
+      - "9003:9003"
+    volumes:
+      - chunk3-data:/data
+    depends_on:
+      - master
+
+volumes:
+  master-data:
+  chunk1-data:
+  chunk2-data:
+  chunk3-data:

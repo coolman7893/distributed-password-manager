@@ -1,0 +1,22 @@
+# Binaries
+bin/
+*.exe
+
+# Data directories
+data/
+
+# TLS certificates (generated locally)
+certs/
+
+# Go build cache
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
