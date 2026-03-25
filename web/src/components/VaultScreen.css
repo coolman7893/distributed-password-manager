@@ -407,6 +407,16 @@
   padding: 6px 10px;
 }
 
+.vault-warning {
+  margin: 6px 12px;
+  font-size: 0.72rem;
+  color: #fde68a;
+  background: #78350f2b;
+  border: 1px solid #ca8a04;
+  border-radius: var(--radius);
+  padding: 6px 10px;
+}
+
 .spin { animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 

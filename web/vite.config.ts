@@ -6,20 +6,17 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/auth': {
+      '/m1': {
         target: 'https://localhost:8443',
         changeOrigin: true,
         secure: false,
+        rewrite: (path) => path.replace(/^\/m1/, ''),
       },
-      '/vault': {
-        target: 'https://localhost:8443',
+      '/m2': {
+        target: 'https://localhost:9443',
         changeOrigin: true,
         secure: false,
-      },
-      '/health': {
-        target: 'https://localhost:8443',
-        changeOrigin: true,
-        secure: false,
+        rewrite: (path) => path.replace(/^\/m2/, ''),
       },
     }
   },

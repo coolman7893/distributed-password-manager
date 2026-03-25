@@ -16,15 +16,28 @@ export default function VaultScreen({ }: Props) {
   const [panel, setPanel] = useState<Panel>('list');
   const [selected, setSelected] = useState<PasswordEntry | null>(null);
   const [error, setError] = useState('');
+  const [healthyChunks, setHealthyChunks] = useState<number | null>(null);
 
   const loadSites = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
+      const health = await api.health();
+      setHealthyChunks(health.chunks);
+
+      if (health.chunks === 0) {
+        setSites([]);
+        return;
+      }
+
       const res = await api.listSites();
       setSites(res.sites || []);
     } catch (e) {
-      setError((e as Error).message);
+      const message = (e as Error).message;
+      setError(message);
+      if (message.toLowerCase().includes('no healthy chunk')) {
+        setHealthyChunks(0);
+      }
     } finally {
       setLoading(false);
     }
@@ -37,6 +50,10 @@ export default function VaultScreen({ }: Props) {
   );
 
   const openSite = async (site: string) => {
+    if (healthyChunks === 0) {
+      setError('storage backend unavailable: no healthy chunk servers');
+      return;
+    }
     try {
       const entry = await api.getEntry(site);
       setSelected(entry);
@@ -47,6 +64,10 @@ export default function VaultScreen({ }: Props) {
   };
 
   const deleteSite = async (site: string) => {
+    if (healthyChunks === 0) {
+      setError('storage backend unavailable: no healthy chunk servers');
+      return;
+    }
     if (!confirm(`Delete entry for ${site}?`)) return;
     try {
       await api.deleteEntry(site);
@@ -95,6 +116,16 @@ export default function VaultScreen({ }: Props) {
         </div>
 
         <AnimatePresence>
+          {healthyChunks === 0 && (
+            <motion.div
+              className="vault-warning"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              authenticated, but storage backend is unavailable (0 healthy chunks)
+            </motion.div>
+          )}
           {error && (
             <motion.div
               className="vault-error"
@@ -113,6 +144,11 @@ export default function VaultScreen({ }: Props) {
               {[...Array(4)].map((_, i) => (
                 <div key={i} className="skeleton" style={{ animationDelay: `${i * 0.1}s` }} />
               ))}
+            </div>
+          ) : healthyChunks === 0 ? (
+            <div className="list-empty">
+              // storage backend unavailable<br />
+              start at least one chunk server, then press refresh
             </div>
           ) : filteredSites.length === 0 ? (
             <div className="list-empty">
@@ -156,6 +192,7 @@ export default function VaultScreen({ }: Props) {
               transition={{ duration: 0.2 }}
             >
               <AddPanel
+                storageUnavailable={healthyChunks === 0}
                 onSave={async (entry) => {
                   await api.saveEntry(entry);
                   await loadSites();
@@ -199,7 +236,11 @@ export default function VaultScreen({ }: Props) {
   );
 }
 
-function AddPanel({ onSave, onCancel }: { onSave: (e: PasswordEntry) => Promise<void>; onCancel: () => void }) {
+function AddPanel({ onSave, onCancel, storageUnavailable }: {
+  onSave: (e: PasswordEntry) => Promise<void>;
+  onCancel: () => void;
+  storageUnavailable: boolean;
+}) {
   const [site, setSite] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -208,6 +249,10 @@ function AddPanel({ onSave, onCancel }: { onSave: (e: PasswordEntry) => Promise<
   const [showPass, setShowPass] = useState(false);
 
   const save = async () => {
+    if (storageUnavailable) {
+      setError('cannot save while no healthy chunk servers are available');
+      return;
+    }
     if (!site.trim() || !username.trim() || !password.trim()) {
       setError('all fields required');
       return;
@@ -249,11 +294,14 @@ function AddPanel({ onSave, onCancel }: { onSave: (e: PasswordEntry) => Promise<
         </div>
 
         {error && <div className="panel-error">{error}</div>}
+        {storageUnavailable && (
+          <div className="panel-error">storage backend unavailable: writes are temporarily disabled</div>
+        )}
       </div>
 
       <div className="detail-actions">
         <button className="btn-secondary" onClick={onCancel}>CANCEL</button>
-        <button className="btn-primary" onClick={save} disabled={saving}>
+        <button className="btn-primary" onClick={save} disabled={saving || storageUnavailable}>
           {saving ? 'SAVING...' : 'SAVE ENTRY'}
         </button>
       </div>
