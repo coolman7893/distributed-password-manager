@@ -104,7 +104,8 @@ distributed-password-manager/
 
 ### Prerequisites
 
-- **Go 1.22+**
+- **Go 1.26.1+**
+- **Node.js 20+** (for frontend build/dev)
 - **OpenSSL** (included with [Git for Windows](https://gitforwindows.org/))
 
 ### 1. Clone the repository
@@ -170,47 +171,42 @@ Open **four** terminals:
   -cert certs/server-cert.pem -key certs/server-key.pem -ca certs/ca-cert.pem
 ```
 
-### 5. Run the client
+### 5. Start the Frontend (optional)
+
+```bash
+cd web
+npm install
+npm run build
+npm run dev
+```
+
+Open http://localhost:3000 in your browser.
+
+Notes:
+- The built frontend is also served by the master on `https://localhost:8443` (default `-http` in `cmd/master/main.go`).
+- The master HTTPS REST/web endpoint accepts normal HTTPS clients (no browser client certificate setup required).
+- For straightforward local validation, the CLI flow below is recommended.
+
+### 6. Quick End-to-End CLI Validation (recommended)
+
+In a fifth terminal:
 
 ```bash
 ./client -master localhost:9000 \
   -cert certs/client-cert.pem -key certs/client-key.pem -ca certs/ca-cert.pem
 ```
 
-### 6. Use the password manager
+Then run: `register`, `login`, `save`, `get`, `list`, `delete`.
 
-```
-=== Distributed Password Manager ===
-Commands: register, login, exit
-> register
-Username: alice
-Master password: MyStr0ngP@ss!
-Registered successfully.
-> login
-Username: alice
-Master password: MyStr0ngP@ss!
-Logged in. Commands: save, get, list, delete, logout
-[logged in] > save
-Site: github.com
-Username: alice
-Password: gh_secret_123
-Saved.
-[logged in] > list
-Stored sites:
-  - github.com
-[logged in] > get
-Site: github.com
-  Site:     github.com
-  Username: alice
-  Password: gh_secret_123
-[logged in] > delete
-Site: github.com
-Deleted.
-[logged in] > logout
-Logged out.
-> exit
-Bye.
-```
+### 7. Use the Web Interface
+
+- **Register**: Create a new account with username and master password
+- **Login**: Authenticate to access your vault
+- **Save**: Store a new password entry (site, username, password)
+- **Get**: Retrieve a password by site name
+- **List**: View all stored sites
+- **Delete**: Remove a password entry
+- **Logout**: End session
 
 ---
 

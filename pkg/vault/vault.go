@@ -26,6 +26,16 @@ type Client struct {
 	Username   string
 }
 
+// NewClient creates a new vault client.
+func NewClient(masterAddr string, tlsConfig *tls.Config, vaultKey []byte, username string) (*Client, error) {
+	return &Client{
+		MasterAddr: masterAddr,
+		TLSConfig:  tlsConfig,
+		VaultKey:   vaultKey,
+		Username:   username,
+	}, nil
+}
+
 // Save encrypts a password entry client-side, then writes it through the primary chunk.
 func (c *Client) Save(entry PasswordEntry) error {
 	plaintext, err := json.Marshal(entry)
@@ -71,7 +81,7 @@ func (c *Client) Save(entry PasswordEntry) error {
 		if ok {
 			errMsg = writeResp.Err
 		}
-		return fmt.Errorf(errMsg)
+		return fmt.Errorf("%s", errMsg)
 	}
 
 	// Notify master to record in WAL
