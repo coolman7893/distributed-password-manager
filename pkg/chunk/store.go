@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -154,5 +155,22 @@ func sanitize(key string) string {
 
 func keyFromFilename(path string) string {
 	base := filepath.Base(path)
-	return base[:len(base)-len(".json")]
+	raw := base[:len(base)-len(".json")]
+	return unsanitize(raw)
+}
+
+func unsanitize(key string) string {
+	var b strings.Builder
+	for i := 0; i < len(key); i++ {
+		if key[i] == '_' && i+2 < len(key) {
+			h := key[i+1 : i+3]
+			if v, err := strconv.ParseUint(h, 16, 8); err == nil {
+				b.WriteByte(byte(v))
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(key[i])
+	}
+	return b.String()
 }
