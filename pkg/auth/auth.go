@@ -81,6 +81,19 @@ func (s *UserStore) Login(username, password string) (vaultKey []byte, salt []by
 	return key, user.Salt, nil
 }
 
+// GetUser returns the user struct for the given username.
+func (s *UserStore) GetUser(username string) (*User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	user, ok := s.users[username]
+	if !ok {
+		return nil, fmt.Errorf("user not found")
+	}
+
+	return user, nil
+}
+
 func (s *UserStore) persist() error {
 	data, err := json.Marshal(s.users)
 	if err != nil {
