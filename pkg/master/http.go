@@ -92,24 +92,11 @@ type UserStoreIface interface {
 
 // HTTPServer is the REST + static-file server embedded in the master node.
 type HTTPServer struct {
-	// Addr is the HTTPS listen address, e.g. ":8443".
-	Addr string
-
-	// MasterAddr is the TCP address of the master's gob server, e.g. "localhost:9000".
-	MasterAddr string
-
-	// TLSConfig is shared with the master (same cert/key/CA).
-	TLSConfig *tls.Config
-
-	// UserStore is shared with the master so HTTP register/login hits the same file.
-	UserStore UserStoreIface
-
-	// StaticDir is the path to the built React app (web/dist).
-	// Leave empty to disable the static file handler.
-	StaticDir string
-
-	// RegistryProbe is an optional func the master injects so /health can report
-	// live chunk counts without coupling HTTPServer to Registry directly.
+	Addr          string
+	MasterAddr    string
+	TLSConfig     *tls.Config
+	UserStore     UserStoreIface
+	StaticDir     string
 	RegistryProbe func() int
 
 	sessions *sessionStore
@@ -212,6 +199,12 @@ func (h *HTTPServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "username and password required", http.StatusBadRequest)
 		return
 	}
+	// Password length is also enforced in auth.Register() server-side,
+	// but we return a clear HTTP 400 here so the UI gets a clean error message.
+	if len(body.Password) < 8 {
+		jsonError(w, "password must be at least 8 characters", http.StatusBadRequest)
+		return
+	}
 	if err := h.UserStore.Register(body.Username, body.Password); err != nil {
 		jsonError(w, err.Error(), http.StatusConflict)
 		return
@@ -228,7 +221,7 @@ func (h *HTTPServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	vaultKey, _, err := h.UserStore.Login(body.Username, body.Password)
+	vaultKey, salt, err := h.UserStore.Login(body.Username, body.Password)
 	if err != nil {
 		jsonError(w, "invalid credentials", http.StatusUnauthorized)
 		return
@@ -242,7 +235,13 @@ func (h *HTTPServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400,
 	})
-	jsonOK(w, map[string]string{"message": "logged in", "username": body.Username})
+	// Return the salt so the CLI client can derive the vault key locally.
+	// The web UI ignores this field — it uses the session cookie instead.
+	jsonOK(w, map[string]interface{}{
+		"message":  "logged in",
+		"username": body.Username,
+		"salt":     salt,
+	})
 }
 
 func (h *HTTPServer) handleLogout(w http.ResponseWriter, r *http.Request) {
