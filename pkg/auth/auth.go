@@ -10,6 +10,8 @@ import (
 	appCrypto "github.com/coolman7893/distributed-password-manager/pkg/crypto"
 )
 
+const minPasswordLength = 8
+
 // User represents a registered user account.
 type User struct {
 	Username     string `json:"username"`
@@ -38,6 +40,14 @@ func NewUserStore(path string) (*UserStore, error) {
 }
 
 func (s *UserStore) Register(username, password string) error {
+	// ── validation ──────────────────────────────────────────────────────────
+	if username == "" {
+		return fmt.Errorf("username cannot be empty")
+	}
+	if len(password) < minPasswordLength {
+		return fmt.Errorf("password must be at least %d characters", minPasswordLength)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
