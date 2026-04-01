@@ -6,6 +6,7 @@ import (
 	"net"
 	"sync/atomic"
 
+	appCrypto "github.com/coolman7893/distributed-password-manager/pkg/crypto"
 	"github.com/coolman7893/distributed-password-manager/pkg/protocol"
 )
 
@@ -140,7 +141,8 @@ func (s *Server) handleListKeys(conn net.Conn, req protocol.ListKeysRequest) {
 	}
 
 	chunkAddr := alive[0].Addr
-	chunkConn, err := tls.Dial("tcp", chunkAddr, s.TLSConfig)
+	tlsCfg := appCrypto.PrepareClientTLSConfig(s.TLSConfig, chunkAddr)
+	chunkConn, err := tls.Dial("tcp", chunkAddr, tlsCfg)
 	if err != nil {
 		protocol.Send(conn, protocol.ListKeysResponse{})
 		return
