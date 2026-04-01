@@ -10,11 +10,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
 	appCrypto "github.com/coolman7893/distributed-password-manager/pkg/crypto"
-	"github.com/coolman7893/distributed-password-manager/pkg/vault"
 )
 
 // httpClient is a small helper that talks to the master's HTTPS REST API.
@@ -46,6 +46,40 @@ func (c *httpClient) post(path string, body interface{}) (*http.Response, []byte
 		return nil, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.sessionCookie != nil {
+		req.AddCookie(c.sessionCookie)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	return resp, data, nil
+}
+
+func (c *httpClient) get(path string) (*http.Response, []byte, error) {
+	req, err := http.NewRequest("GET", c.baseURL+path, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	if c.sessionCookie != nil {
+		req.AddCookie(c.sessionCookie)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	return resp, data, nil
+}
+
+func (c *httpClient) delete(path string) (*http.Response, []byte, error) {
+	req, err := http.NewRequest("DELETE", c.baseURL+path, nil)
+	if err != nil {
+		return nil, nil, err
+	}
 	if c.sessionCookie != nil {
 		req.AddCookie(c.sessionCookie)
 	}
@@ -117,6 +151,86 @@ func (c *httpClient) login(username, password string) error {
 	return nil
 }
 
+// Vault operations via HTTP
+
+func (c *httpClient) list() ([]string, error) {
+	resp, data, err := c.get("/vault/list")
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		var e map[string]string
+		json.Unmarshal(data, &e)
+		if msg, ok := e["error"]; ok {
+			return nil, fmt.Errorf("%s", msg)
+		}
+		return nil, fmt.Errorf("list failed (HTTP %d)", resp.StatusCode)
+	}
+	var result struct {
+		Sites []string `json:"sites"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	return result.Sites, nil
+}
+
+func (c *httpClient) getEntry(site string) (map[string]string, error) {
+	resp, data, err := c.get("/vault/get?site=" + url.QueryEscape(strings.TrimSpace(site)))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		var e map[string]string
+		json.Unmarshal(data, &e)
+		if msg, ok := e["error"]; ok {
+			return nil, fmt.Errorf("%s", msg)
+		}
+		return nil, fmt.Errorf("get failed (HTTP %d)", resp.StatusCode)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (c *httpClient) save(site, username, password string) error {
+	resp, data, err := c.post("/vault/save", map[string]string{
+		"site":     site,
+		"username": username,
+		"password": password,
+	})
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		var e map[string]string
+		json.Unmarshal(data, &e)
+		if msg, ok := e["error"]; ok {
+			return fmt.Errorf("%s", msg)
+		}
+		return fmt.Errorf("save failed (HTTP %d)", resp.StatusCode)
+	}
+	return nil
+}
+
+func (c *httpClient) deleteEntry(site string) error {
+	resp, data, err := c.delete("/vault/delete?site=" + url.QueryEscape(strings.TrimSpace(site)))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		var e map[string]string
+		json.Unmarshal(data, &e)
+		if msg, ok := e["error"]; ok {
+			return fmt.Errorf("%s", msg)
+		}
+		return fmt.Errorf("delete failed (HTTP %d)", resp.StatusCode)
+	}
+	return nil
+}
+
 func main() {
 	masterAddr := flag.String("master", "localhost:9000", "Master gob address (host:port)")
 	masterHTTP := flag.String("http", "", "Master HTTPS address for auth (host:port). Defaults to master host on port 8443")
@@ -143,11 +257,10 @@ func main() {
 	fmt.Println("=== Distributed Password Manager ===")
 	fmt.Println("Commands: register, login, exit")
 
-	var vaultClient *vault.Client
 	var loggedInUser string
 
 	for {
-		if vaultClient != nil {
+		if loggedInUser != "" {
 			fmt.Printf("[%s] > ", loggedInUser)
 		} else {
 			fmt.Print("> ")
@@ -198,51 +311,11 @@ func main() {
 				continue
 			}
 
-			// Derive the vault key locally — same algorithm the master uses.
-			// To do this we need the salt. We fetch it by calling the master
-			// gob auth path. Since the master stores the salt in users.json and
-			// we just verified the password is correct, we can derive the key
-			// by re-calling the auth package login which returns the derived key.
-			//
-			// We talk to the master gob port for this using a temporary local
-			// UserStore pointed at a temp path — but that would be the old broken
-			// approach. Instead we derive the key by talking to the master via
-			// a small helper that asks the master for the salt over the gob port.
-			//
-			// Simplest correct approach: the vault key derivation only needs the
-			// password + salt. The salt is stored on the master. We already have
-			// a verified login session. So we derive the key via a gob request
-			// to the master that returns the salt for the authenticated user.
-			// That gob message doesn't exist yet — so we use the pragmatic
-			// alternative: derive the key using an empty/fixed salt for now and
-			// add a GetSalt gob message in a follow-up. Actually the cleanest
-			// approach that requires zero new gob messages is:
-			//
-			// The master HTTP /auth/login already internally calls
-			// userStore.Login() which derives and returns the vaultKey.
-			// We just need the master to return it (or return the salt).
-			// We add a "salt" field to the login response below.
-			//
-			// See pkg/master/http.go — handleLogin now returns the salt
-			// in the response body so the CLI can derive the key locally.
-			saltResp, saltErr := authAPI.getSaltFromLoginResponse(username, password)
-			if saltErr != nil {
-				fmt.Println("Login failed (could not get vault key):", saltErr)
-				continue
-			}
-
-			key := appCrypto.DeriveKey(password, saltResp)
-			vaultClient = &vault.Client{
-				MasterAddr: *masterAddr,
-				TLSConfig:  tlsCfg,
-				VaultKey:   key,
-				Username:   username,
-			}
 			loggedInUser = username
 			fmt.Println("Logged in. Commands: save, get, list, delete, logout")
 
 		case "save":
-			if vaultClient == nil {
+			if loggedInUser == "" {
 				fmt.Println("Please login first.")
 				continue
 			}
@@ -255,9 +328,7 @@ func main() {
 			fmt.Print("Password: ")
 			scanner.Scan()
 			pass := strings.TrimSpace(scanner.Text())
-			err := vaultClient.Save(vault.PasswordEntry{
-				Site: site, Username: user, Password: pass,
-			})
+			err := authAPI.save(site, user, pass)
 			if err != nil {
 				fmt.Println("Error:", err)
 			} else {
@@ -265,28 +336,35 @@ func main() {
 			}
 
 		case "get":
-			if vaultClient == nil {
+			if loggedInUser == "" {
 				fmt.Println("Please login first.")
 				continue
 			}
-			fmt.Print("Site: ")
-			scanner.Scan()
-			site := strings.TrimSpace(scanner.Text())
-			entry, err := vaultClient.Get(site)
+			var site string
+			if len(parts) > 1 {
+				// Site name provided on command line: get github UI
+				site = strings.TrimSpace(strings.TrimPrefix(line, "get"))
+			} else {
+				// Prompt for site
+				fmt.Print("Site: ")
+				scanner.Scan()
+				site = strings.TrimSpace(scanner.Text())
+			}
+			entry, err := authAPI.getEntry(site)
 			if err != nil {
 				fmt.Println("Error:", err)
 			} else {
-				fmt.Printf("  Site:     %s\n", entry.Site)
-				fmt.Printf("  Username: %s\n", entry.Username)
-				fmt.Printf("  Password: %s\n", entry.Password)
+				fmt.Printf("  Site:     %s\n", entry["site"])
+				fmt.Printf("  Username: %s\n", entry["username"])
+				fmt.Printf("  Password: %s\n", entry["password"])
 			}
 
 		case "list":
-			if vaultClient == nil {
+			if loggedInUser == "" {
 				fmt.Println("Please login first.")
 				continue
 			}
-			sites, err := vaultClient.List()
+			sites, err := authAPI.list()
 			if err != nil {
 				fmt.Println("Error:", err)
 			} else if len(sites) == 0 {
@@ -299,21 +377,27 @@ func main() {
 			}
 
 		case "delete":
-			if vaultClient == nil {
+			if loggedInUser == "" {
 				fmt.Println("Please login first.")
 				continue
 			}
-			fmt.Print("Site: ")
-			scanner.Scan()
-			site := strings.TrimSpace(scanner.Text())
-			if err := vaultClient.Delete(site); err != nil {
+			var site string
+			if len(parts) > 1 {
+				// Site name provided on command line: delete github UI
+				site = strings.TrimSpace(strings.TrimPrefix(line, "delete"))
+			} else {
+				// Prompt for site
+				fmt.Print("Site: ")
+				scanner.Scan()
+				site = strings.TrimSpace(scanner.Text())
+			}
+			if err := authAPI.deleteEntry(site); err != nil {
 				fmt.Println("Error:", err)
 			} else {
 				fmt.Println("Deleted.")
 			}
 
 		case "logout":
-			vaultClient = nil
 			loggedInUser = ""
 			fmt.Println("Logged out.")
 
@@ -323,7 +407,7 @@ func main() {
 
 		default:
 			fmt.Println("Unknown command:", parts[0])
-			if vaultClient != nil {
+			if loggedInUser != "" {
 				fmt.Println("Commands: save, get, list, delete, logout, exit")
 			} else {
 				fmt.Println("Commands: register, login, exit")
