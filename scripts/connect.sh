@@ -46,12 +46,11 @@ echo "  CLI master addr    : ${MASTER_EXTERNAL}:${MASTER_PORT}"
 echo ""
 echo "  CLI client (copy-paste ready):"
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CLIENT_BIN="$REPO_ROOT/bin/linux/client"
+CLIENT_BIN="./bin/linux/client"
 if [[ "$OS" == "windows" ]]; then
-  CLIENT_BIN="$REPO_ROOT/bin/windows/client.exe"
+  CLIENT_BIN="./bin/windows/client.exe"
 fi
-echo "    $CLIENT_BIN -master ${MASTER_EXTERNAL}:${MASTER_PORT} -cert $REPO_ROOT/certs/client-cert.pem -key $REPO_ROOT/certs/client-key.pem -ca $REPO_ROOT/certs/ca-cert.pem"
+echo "    $CLIENT_BIN -master ${MASTER_EXTERNAL}:${MASTER_PORT} -cert ./certs/client-cert.pem -key ./certs/client-key.pem -ca ./certs/ca-cert.pem"
 echo ""
 
 MODE="${1:-info}"
@@ -59,16 +58,15 @@ MODE="${1:-info}"
 case "$MODE" in
   cli)
     echo "Launching CLI client..."
-    REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-    CLIENT_BIN="$REPO_ROOT/bin/linux/client"
+    CLIENT_BIN="./bin/linux/client"
     if [[ "$OS" == "windows" ]]; then
-      CLIENT_BIN="$REPO_ROOT/bin/windows/client.exe"
+      CLIENT_BIN="./bin/windows/client.exe"
     fi
     "$CLIENT_BIN" \
       -master "${MASTER_EXTERNAL}:${MASTER_PORT}" \
-      -cert "$REPO_ROOT/certs/client-cert.pem" \
-      -key  "$REPO_ROOT/certs/client-key.pem" \
-      -ca   "$REPO_ROOT/certs/ca-cert.pem"
+      -cert "./certs/client-cert.pem" \
+      -key  "./certs/client-key.pem" \
+      -ca   "./certs/ca-cert.pem"
     ;;
 
   status)
