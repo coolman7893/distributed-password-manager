@@ -90,7 +90,7 @@ func (s *Server) handleRegister(conn net.Conn, req protocol.RegisterChunkRequest
 	protocol.Send(conn, protocol.RecoveryResponse{Entries: entries})
 }
 
-func (s *Server) handleGetPrimary(conn net.Conn, req protocol.GetPrimaryRequest) {
+func (s *Server) handleGetPrimary(conn net.Conn, _ protocol.GetPrimaryRequest) {
 	primaryID := s.Meta.PrimaryID()
 	alive := s.Registry.AliveChunks()
 
@@ -120,7 +120,7 @@ func (s *Server) handleGetPrimary(conn net.Conn, req protocol.GetPrimaryRequest)
 	})
 }
 
-func (s *Server) handleGetChunk(conn net.Conn, req protocol.GetChunkRequest) {
+func (s *Server) handleGetChunk(conn net.Conn, _ protocol.GetChunkRequest) {
 	alive := s.Registry.AliveChunks()
 	if len(alive) == 0 {
 		protocol.Send(conn, protocol.GetChunkResponse{OK: false})

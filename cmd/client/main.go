@@ -415,30 +415,3 @@ func main() {
 		}
 	}
 }
-
-// getSaltFromLoginResponse calls the master HTTP login endpoint and extracts
-// the salt from the response so the CLI can derive the vault key locally.
-// This requires pkg/master/http.go handleLogin to include "salt" in its
-// JSON response — see that file for the matching change.
-func (c *httpClient) getSaltFromLoginResponse(username, password string) ([]byte, error) {
-	resp, data, err := c.post("/auth/login", map[string]string{
-		"username": username,
-		"password": password,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("login failed (HTTP %d)", resp.StatusCode)
-	}
-	var body struct {
-		Salt []byte `json:"salt"`
-	}
-	if err := json.Unmarshal(data, &body); err != nil {
-		return nil, fmt.Errorf("could not parse login response: %w", err)
-	}
-	if len(body.Salt) == 0 {
-		return nil, fmt.Errorf("master did not return salt in login response")
-	}
-	return body.Salt, nil
-}
