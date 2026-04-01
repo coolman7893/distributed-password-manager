@@ -66,4 +66,4 @@ echo "Done. All PWM resources deleted. Zero ongoing cost."
 echo ""
 echo "To redeploy later:"
 echo "  export GCP_PROJECT=$GCP_PROJECT"
-echo "  bash scripts/deploy-gcp.sh"
+echo "  bash scripts/deploy-gcp.sh"bash
