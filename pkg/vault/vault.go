@@ -59,9 +59,11 @@ func (c *Client) Save(entry PasswordEntry) error {
 	}
 
 	// Write to primary (primary handles replication)
-	conn, err := tls.Dial("tcp", primary, c.TLSConfig)
+	tlsCfg := appCrypto.PrepareClientTLSConfig(c.TLSConfig, primary)
+	conn, err := tls.Dial("tcp", primary, tlsCfg)
 	if err != nil {
-		return fmt.Errorf("connect to primary: %w", err)
+		// If connection to primary fails, it likely means the primary is down
+		return fmt.Errorf("primary unavailable — could not connect to %s: %w", primary, err)
 	}
 	defer conn.Close()
 
@@ -99,7 +101,8 @@ func (c *Client) Get(site string) (*PasswordEntry, error) {
 		return nil, err
 	}
 
-	conn, err := tls.Dial("tcp", addr, c.TLSConfig)
+	tlsCfg := appCrypto.PrepareClientTLSConfig(c.TLSConfig, addr)
+	conn, err := tls.Dial("tcp", addr, tlsCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +143,8 @@ func (c *Client) Delete(site string) error {
 		return fmt.Errorf("primary unavailable")
 	}
 
-	conn, err := tls.Dial("tcp", primary, c.TLSConfig)
+	tlsCfg := appCrypto.PrepareClientTLSConfig(c.TLSConfig, primary)
+	conn, err := tls.Dial("tcp", primary, tlsCfg)
 	if err != nil {
 		return err
 	}
@@ -165,7 +169,8 @@ func (c *Client) Delete(site string) error {
 func (c *Client) List() ([]string, error) {
 	prefix := c.Username + "/"
 
-	conn, err := tls.Dial("tcp", c.MasterAddr, c.TLSConfig)
+	tlsCfg := appCrypto.PrepareClientTLSConfig(c.TLSConfig, c.MasterAddr)
+	conn, err := tls.Dial("tcp", c.MasterAddr, tlsCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +204,8 @@ func (c *Client) entryKey(site string) string {
 }
 
 func (c *Client) getPrimary(key string) (string, []string, uint64, error) {
-	conn, err := tls.Dial("tcp", c.MasterAddr, c.TLSConfig)
+	tlsCfg := appCrypto.PrepareClientTLSConfig(c.TLSConfig, c.MasterAddr)
+	conn, err := tls.Dial("tcp", c.MasterAddr, tlsCfg)
 	if err != nil {
 		return "", nil, 0, err
 	}
@@ -218,7 +224,8 @@ func (c *Client) getPrimary(key string) (string, []string, uint64, error) {
 }
 
 func (c *Client) getChunk(key string) (string, error) {
-	conn, err := tls.Dial("tcp", c.MasterAddr, c.TLSConfig)
+	tlsCfg := appCrypto.PrepareClientTLSConfig(c.TLSConfig, c.MasterAddr)
+	conn, err := tls.Dial("tcp", c.MasterAddr, tlsCfg)
 	if err != nil {
 		return "", err
 	}
@@ -241,7 +248,8 @@ func (c *Client) getChunk(key string) (string, error) {
 // but we record the data by sending a write notification.
 // For simplicity we re-use the WAL append path on the master side.
 func (c *Client) notifyMasterWAL(key string, value []byte, seqNum uint64, isDelete bool) {
-	conn, err := tls.Dial("tcp", c.MasterAddr, c.TLSConfig)
+	tlsCfg := appCrypto.PrepareClientTLSConfig(c.TLSConfig, c.MasterAddr)
+	conn, err := tls.Dial("tcp", c.MasterAddr, tlsCfg)
 	if err != nil {
 		return
 	}

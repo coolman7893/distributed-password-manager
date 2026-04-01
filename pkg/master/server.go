@@ -6,6 +6,7 @@ import (
 	"net"
 	"sync/atomic"
 
+	appCrypto "github.com/coolman7893/distributed-password-manager/pkg/crypto"
 	"github.com/coolman7893/distributed-password-manager/pkg/protocol"
 )
 
@@ -89,7 +90,7 @@ func (s *Server) handleRegister(conn net.Conn, req protocol.RegisterChunkRequest
 	protocol.Send(conn, protocol.RecoveryResponse{Entries: entries})
 }
 
-func (s *Server) handleGetPrimary(conn net.Conn, req protocol.GetPrimaryRequest) {
+func (s *Server) handleGetPrimary(conn net.Conn, _ protocol.GetPrimaryRequest) {
 	primaryID := s.Meta.PrimaryID()
 	alive := s.Registry.AliveChunks()
 
@@ -119,7 +120,7 @@ func (s *Server) handleGetPrimary(conn net.Conn, req protocol.GetPrimaryRequest)
 	})
 }
 
-func (s *Server) handleGetChunk(conn net.Conn, req protocol.GetChunkRequest) {
+func (s *Server) handleGetChunk(conn net.Conn, _ protocol.GetChunkRequest) {
 	alive := s.Registry.AliveChunks()
 	if len(alive) == 0 {
 		protocol.Send(conn, protocol.GetChunkResponse{OK: false})
@@ -140,7 +141,8 @@ func (s *Server) handleListKeys(conn net.Conn, req protocol.ListKeysRequest) {
 	}
 
 	chunkAddr := alive[0].Addr
-	chunkConn, err := tls.Dial("tcp", chunkAddr, s.TLSConfig)
+	tlsCfg := appCrypto.PrepareClientTLSConfig(s.TLSConfig, chunkAddr)
+	chunkConn, err := tls.Dial("tcp", chunkAddr, tlsCfg)
 	if err != nil {
 		protocol.Send(conn, protocol.ListKeysResponse{})
 		return

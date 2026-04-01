@@ -303,14 +303,24 @@ func (h *HTTPServer) handleSave(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPServer) handleDelete(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Site string `json:"site"`
+	site := r.URL.Query().Get("site")
+
+	// If site not in query params, try JSON body (for UI compatibility)
+	if site == "" {
+		var body struct {
+			Site string `json:"site"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+			site = body.Site
+		}
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Site == "" {
-		jsonError(w, "site required", http.StatusBadRequest)
+
+	if site == "" {
+		jsonError(w, "site required (query param or JSON body)", http.StatusBadRequest)
 		return
 	}
-	if err := h.newVaultClient(sessionFrom(r)).Delete(body.Site); err != nil {
+
+	if err := h.newVaultClient(sessionFrom(r)).Delete(site); err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

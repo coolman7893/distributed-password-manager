@@ -3,13 +3,27 @@
 # Run this after starting VMs (after a stop/start cycle)
 #
 # Usage:
-#   bash scripts/connect.sh          — just prints the current IP and URLs
-#   bash scripts/connect.sh cli      — launches the CLI client
-#   bash scripts/connect.sh status   — shows service status on all VMs
-#   bash scripts/connect.sh logs     — tails master logs live
+#   bash scripts/connect.sh             — just prints the current IP and URLs
+#   bash scripts/connect.sh cli         — launches the CLI client
+#   bash scripts/connect.sh status      — shows service status on all VMs
+#   bash scripts/connect.sh logs        — tails master logs live
+#   bash scripts/connect.sh logs1       — tails chunk1 logs live
+#   bash scripts/connect.sh logs2       — tails chunk2 logs live
+#   bash scripts/connect.sh logs3       — tails chunk3 logs live
 # =============================================================================
 
 set -euo pipefail
+
+# Detect OS to use correct client binary
+detect_os() {
+  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "mingw"* || "$OSTYPE" == "cygwin" ]]; then
+    echo "windows"
+  else
+    echo "linux"
+  fi
+}
+
+OS=$(detect_os)
 
 GCP_PROJECT="${GCP_PROJECT:-}"
 VM_PREFIX="${VM_PREFIX:-pwm}"
@@ -30,18 +44,29 @@ echo "  Master external IP : $MASTER_EXTERNAL"
 echo "  Web UI             : https://${MASTER_EXTERNAL}:${HTTP_PORT}"
 echo "  CLI master addr    : ${MASTER_EXTERNAL}:${MASTER_PORT}"
 echo ""
+echo "  CLI client (copy-paste ready):"
+
+CLIENT_BIN="./bin/linux/client"
+if [[ "$OS" == "windows" ]]; then
+  CLIENT_BIN="./bin/windows/client.exe"
+fi
+echo "    $CLIENT_BIN -master ${MASTER_EXTERNAL}:${MASTER_PORT} -cert ./certs/client-cert.pem -key ./certs/client-key.pem -ca ./certs/ca-cert.pem"
+echo ""
 
 MODE="${1:-info}"
 
 case "$MODE" in
   cli)
     echo "Launching CLI client..."
-    REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-    "$REPO_ROOT/bin/linux/client" \
+    CLIENT_BIN="./bin/linux/client"
+    if [[ "$OS" == "windows" ]]; then
+      CLIENT_BIN="./bin/windows/client.exe"
+    fi
+    "$CLIENT_BIN" \
       -master "${MASTER_EXTERNAL}:${MASTER_PORT}" \
-      -cert "$REPO_ROOT/certs/client-cert.pem" \
-      -key  "$REPO_ROOT/certs/client-key.pem" \
-      -ca   "$REPO_ROOT/certs/ca-cert.pem"
+      -cert "./certs/client-cert.pem" \
+      -key  "./certs/client-key.pem" \
+      -ca   "./certs/ca-cert.pem"
     ;;
 
   status)
@@ -65,7 +90,28 @@ case "$MODE" in
       --command="sudo journalctl -u pwm-master -f"
     ;;
 
+  logs1)
+    echo "Tailing chunk1 logs (Ctrl+C to stop)..."
+    gcloud compute ssh "${VM_PREFIX}-chunk1" --zone="${CHUNK_ZONES[0]}" \
+      --project="$GCP_PROJECT" --quiet \
+      --command="sudo journalctl -u pwm-chunk -f"
+    ;;
+
+  logs2)
+    echo "Tailing chunk2 logs (Ctrl+C to stop)..."
+    gcloud compute ssh "${VM_PREFIX}-chunk2" --zone="${CHUNK_ZONES[1]}" \
+      --project="$GCP_PROJECT" --quiet \
+      --command="sudo journalctl -u pwm-chunk -f"
+    ;;
+
+  logs3)
+    echo "Tailing chunk3 logs (Ctrl+C to stop)..."
+    gcloud compute ssh "${VM_PREFIX}-chunk3" --zone="${CHUNK_ZONES[2]}" \
+      --project="$GCP_PROJECT" --quiet \
+      --command="sudo journalctl -u pwm-chunk -f"
+    ;;
+
   info)
-    echo "Run with: cli | status | logs"
+    echo "Run with: cli | status | logs | logs1 | logs2 | logs3"
     ;;
 esac
