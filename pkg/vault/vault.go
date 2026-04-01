@@ -62,7 +62,8 @@ func (c *Client) Save(entry PasswordEntry) error {
 	tlsCfg := appCrypto.PrepareClientTLSConfig(c.TLSConfig, primary)
 	conn, err := tls.Dial("tcp", primary, tlsCfg)
 	if err != nil {
-		return fmt.Errorf("connect to primary: %w", err)
+		// If connection to primary fails, it likely means the primary is down
+		return fmt.Errorf("primary unavailable — could not connect to %s: %w", primary, err)
 	}
 	defer conn.Close()
 
