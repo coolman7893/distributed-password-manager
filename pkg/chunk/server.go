@@ -7,13 +7,15 @@ import (
 	"net"
 	"time"
 
+	appCrypto "github.com/coolman7893/distributed-password-manager/pkg/crypto"
 	"github.com/coolman7893/distributed-password-manager/pkg/protocol"
 )
 
 // Server is a chunk server that stores encrypted password data.
 type Server struct {
 	ID         string
-	Addr       string
+	Addr       string // Listen address (e.g., ":9001")
+	RegAddr    string // Registration address advertised to master (e.g., "10.128.0.5:9001")
 	MasterAddr string
 	Store      *Store
 	TLSConfig  *tls.Config
@@ -137,7 +139,8 @@ func (s *Server) handleListKeys(conn net.Conn, req protocol.ListKeysRequest) {
 // --- replication helper ---
 
 func (s *Server) replicateTo(addr, key string, value []byte, seqNum uint64, isDelete bool) error {
-	rc, err := tls.Dial("tcp", addr, s.TLSConfig)
+	tlsCfg := appCrypto.PrepareClientTLSConfig(s.TLSConfig, addr)
+	rc, err := tls.Dial("tcp", addr, tlsCfg)
 	if err != nil {
 		return err
 	}
@@ -160,7 +163,8 @@ func (s *Server) replicateTo(addr, key string, value []byte, seqNum uint64, isDe
 }
 
 func (s *Server) getReplicaAddrs(key string) []string {
-	conn, err := tls.Dial("tcp", s.MasterAddr, s.TLSConfig)
+	tlsCfg := appCrypto.PrepareClientTLSConfig(s.TLSConfig, s.MasterAddr)
+	conn, err := tls.Dial("tcp", s.MasterAddr, tlsCfg)
 	if err != nil {
 		log.Printf("[chunk %s] cannot reach master for replicas: %v", s.ID, err)
 		return nil
@@ -192,7 +196,8 @@ func (s *Server) registerAndHeartbeat() {
 
 func (s *Server) registerWithMaster() {
 	for {
-		conn, err := tls.Dial("tcp", s.MasterAddr, s.TLSConfig)
+		tlsCfg := appCrypto.PrepareClientTLSConfig(s.TLSConfig, s.MasterAddr)
+		conn, err := tls.Dial("tcp", s.MasterAddr, tlsCfg)
 		if err != nil {
 			log.Printf("[chunk %s] failed to connect to master, retrying: %v", s.ID, err)
 			time.Sleep(2 * time.Second)
@@ -201,7 +206,7 @@ func (s *Server) registerWithMaster() {
 
 		protocol.Send(conn, protocol.RegisterChunkRequest{
 			ChunkID:    s.ID,
-			Addr:       s.Addr,
+			Addr:       s.RegAddr,
 			LastSeqNum: s.Store.LastSeqNum(),
 		})
 
@@ -229,11 +234,12 @@ func (s *Server) registerWithMaster() {
 }
 
 func (s *Server) sendHeartbeat() {
-	conn, err := tls.Dial("tcp", s.MasterAddr, s.TLSConfig)
+	tlsCfg := appCrypto.PrepareClientTLSConfig(s.TLSConfig, s.MasterAddr)
+	conn, err := tls.Dial("tcp", s.MasterAddr, tlsCfg)
 	if err != nil {
 		log.Printf("[chunk %s] heartbeat failed: %v", s.ID, err)
 		return
 	}
 	defer conn.Close()
-	protocol.Send(conn, protocol.HeartbeatMsg{ChunkID: s.ID, Addr: s.Addr})
+	protocol.Send(conn, protocol.HeartbeatMsg{ChunkID: s.ID, Addr: s.RegAddr})
 }
