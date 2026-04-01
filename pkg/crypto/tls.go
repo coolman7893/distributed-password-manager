@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 )
 
 // LoadTLSConfig returns a *tls.Config for either server or client use.
@@ -59,14 +58,13 @@ func PrepareClientTLSConfig(cfg *tls.Config, targetAddr string) *tls.Config {
 		// All our certificates have "localhost" and DNS names in SANs
 		newCfg.ServerName = "localhost"
 	} else {
-		// For hostnames, use the hostname directly if it looks like a domain
-		// Otherwise fall back to "localhost"
-		if strings.Contains(host, ".") || host == "localhost" || host == "127.0.0.1" {
-			newCfg.ServerName = host
-		} else {
-			// For DNS names like "master", "chunk1", etc., use them directly
-			newCfg.ServerName = host
-		}
+		// For hostnames, use the hostname directly
+		newCfg.ServerName = host
+	}
+
+	// Ensure ServerName is never empty (Go's TLS requires either ServerName or InsecureSkipVerify)
+	if newCfg.ServerName == "" {
+		newCfg.ServerName = "localhost"
 	}
 
 	return newCfg
