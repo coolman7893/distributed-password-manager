@@ -1,0 +1,2 @@
+#Install the required dependencies only if you want to use the rich library for better console output formatting.
+rich==13.7.0
