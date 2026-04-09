@@ -1,0 +1,6 @@
+# Zone RTT — Thu, Apr  2, 2026  8:05:24 PM
+master→chunk1 (us-central1-a→us-east1-c): 33.466 ms
+master→chunk2 (us-central1-a→us-west4-a): 47.161 ms
+master→chunk3 (us-central1-a→us-central1-b): 0.824 ms
+chunk1→chunk2 (us-east1-c→us-west4-a): 176.817 ms
+local→master: 65 ms

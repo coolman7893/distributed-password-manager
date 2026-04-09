@@ -1,0 +1,4 @@
+concurrent_clients,total_batch_ms,ops_per_sec
+5,1848,2.71
+10,2633,3.8
+20,4225,4.73

@@ -1,0 +1,3 @@
+scenario,reads_ok,reads_total,writes_ok,writes_total
+replica_down,5,5,5,5
+primary_down,5,5,0,5
