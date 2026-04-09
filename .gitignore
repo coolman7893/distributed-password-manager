@@ -49,6 +49,9 @@ yarn-error.log*
 *.tmp
 *.temp
 
+# Presentation
+PRESENTATION.md
+
 # Local agent/test artifacts
 .safety-backup/
 web-cookies.txt
